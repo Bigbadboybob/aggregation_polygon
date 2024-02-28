@@ -1,7 +1,7 @@
 const XMLHttpRequest = require("xmlhttprequest").XMLHttpRequest;
 require('dotenv').config()
 const Web3 = require('web3')
-const web3 = new Web3(process.env.RPC_URL)
+const web3 = new Web3(process.env.RPC_URL2)
 const DN = require('decimal.js')
 let p = true
 
@@ -24,50 +24,37 @@ const quoteABI = coinDATA.QUICKSWAP_ABI
 const quoteAddress = coinDATA.QUICKSWAP_ADDRESS
 const quoteContract = new web3.eth.Contract(quoteABI, quoteAddress)
 
-var ORDERS = []
-
 function getSwapAddr() {
     return coinDATA.QUICKSWAP_ADDRESS
 }
 
-function httpGetAsync(theUrl) {
-    return new Promise((resolve, reject) => {
-        var xmlHttp = new XMLHttpRequest();
-        xmlHttp.onreadystatechange = function() { 
-            if (xmlHttp.readyState == 4 && xmlHttp.status == 200) {
-                resolve(xmlHttp.responseText);
-            }
-        }
-        xmlHttp.open("GET", theUrl, true); // true for asynchronous 
-        xmlHttp.send(null);
-    })
+function quickData(takerToken, makerToken, takerAmount) {
+    return quoteContract.methods.getAmountsOut(takerAmount, [takerToken, makerToken]).call()
 }
 
 
-async function getOrders() {
-    o = await httpGetAsync("https://polygon.api.0x.org/orderbook/v1/orders?perPage=1000")
-    ORDERS = JSON.parse(o).records
-}
-
-function tokenOrders(takerToken, makerToken) {
-    return ORDERS.filter( (order) => {
-        return (order.order.takerToken == takerToken.toLowerCase() && order.order.makerToken == makerToken.toLowerCase())
-    })
-}
-
-async function test() {
-    await getOrders()
-    let orders = tokenOrders(USDC, WETH)
-    console.log(orders)
-}
-test()
-
-//Abandoned for now because of lack of liquidity
 function quote(takerToken, makerToken, takerAmount) {
-    //TODO: sort by rate and then fill orders until takerAmount reached
+    let qProm = new Promise((resolve, reject) =>  {
+        quickData(takerToken, makerToken, takerAmount).then( res => {
+            let decimalDif = DN("10").pow(tokenDecimals[takerToken]-tokenDecimals[makerToken])
+            let dnRate = DN(res[1]).mul(decimalDif).div(DN(String(takerAmount)))
+            let qRate = dnRate.toDP(12).toNumber()
+            let qData = {
+                total: takerAmount.toString(),
+                returnAmount: String(res[1]),
+                swapAddr: getSwapAddr(),
+                approveAddr: getSwapAddr()
+            }
+            resolve([qRate, qData])
+        }).catch( err => {
+            console.log("ERROR")
+            //console.log(err)
+            resolve([0, {total: takerAmount.toString(), returnAmount: "0"}])
+        })
+    })
+    return qProm
 }
 
-//TODO:
 function trnscData(takerToken, makerToken, data, addr) {
     //console.log("data:", data)
     let deadline = Math.round(Date.now()/1000 + 60)

@@ -1,57 +1,64 @@
+"use strict"
 require('dotenv').config()
 require('console.table')
+
+const quickSwap = require("./quickswap")
+const jetSwap = require("./jetswap")
+const apeSwap = require("./apeswap")
+const balancer = require("./balancer")
+const uniswap = require("./uniswap")
+const dodo = require("./dodo")
+const exchanges = [quickSwap, jetSwap, dodo, balancer, uniswap, apeSwap]
+
+const {init, transform, bestRates, bestSwaps, bestSwap, getSwapInfo, getReturns} = require("./aggregation")
+
 const fs = require('fs')
 //const express = require('express')
 //const path = require('path')
-const http = require('http')
+//const http = require('http')
 //const cors = require('cors')
 const Web3 = require('web3')
 //const axios = require('axios')
 const moment = require('moment-timezone')
-const zrx = require('./zrx')
-const inch = require('./1inch')
 const XMLHttpRequest = require("xmlhttprequest").XMLHttpRequest;
+const audio = require("./audio")
+const DN = require('decimal.js')
 
 const HDWalletProvider = require("@truffle/hdwallet-provider")
 const mnemonic = require("../secrets.json").mnemonic;
-const provider = new HDWalletProvider(mnemonic, process.env.RPC_URL)
-//const web3 = new Web3(provider)
-const web3 = new Web3(process.env.RPC_URL)
+const provider = new HDWalletProvider(mnemonic, process.env.SPARE_URL2)
+const web3 = new Web3(provider)
 const ganache = require("ganache-core")
-let accounts = ['0x2E076fB19B3Ee8F55480E0654eD573DadF8cb16d']
 
-const config = require('./config')
+//const web3 = new Web3(process.env.RPC_URL)
+//TODO: Switch to new account
+let accounts = [process.env.ADDRESS]
+web3.eth.getAccounts((err, res) => {
+    accounts = res
+    console.log(accounts)
+})
+var transactionCount
+web3.eth.getTransactionCount(accounts[0]).then( res => {
+    transactionCount = res
+    console.log('nonce:', res)
+})
 
-const DAI = config.DAI
-const WETH = config.WETH
-const USDC = config.USDC
-const SAI = config.SAI
-const USDT = config.USDT
-const WBTC = config.WBTC
-const LINK = config.LINK
-const MKR = config.MKR
-const CRV = config.CRV
-const MANA = config.MANA
-const UNI = config.UNI
-const ZRX = config.ZRX
-const COMP = config.COMP
-const AAVE = config.AAVE
+//const config = require('./config')
+const {
+    DAI, WETH, USDC, USDT, WBTC, AAVE, WMATIC,
+    prices,
+    names,
+    tokenDecimals,
+    zeroAddress,
+    QUICKSWAP_ADDRESS, QUICKSWAP_ABI,
+    QUICKSWAP_SWAP_ABI,
+    ARBITRAGE_ADDRESS, ARBITRAGE_ABI,
+    ERC20_ABI,
+    ADDRESS_PROVIDER_ADDRESS, ADDRESS_PROVIDER_ABI,
+} = require('./config')
 
-const prices = config.prices
-const names = config.names
-const tokenDecimals = config.tokenDecimals
-const zeroAddress = config.zeroAddress
 
-const ZRX_EXCHANGE_ADDRESS = config.ZRX_EXCHANGE_ADDRESS
-const ZRX_EXCHANGE_ABI = config.ZRX_EXCHANGE_ABI
-const zrxExchangeContract = new web3.eth.Contract(ZRX_EXCHANGE_ABI, ZRX_EXCHANGE_ADDRESS)
-const FILL_ORDER_ABI = config.FILL_ORDER_ABI
-
-const ARBITRAGE_ABI = config.ARBITRAGE_ABI
-const ARBITRAGE_ADDRESS = config.ARBITRAGE_ADDRESS
-const DyDxSoloMargin = new web3.eth.Contract(ARBITRAGE_ABI, ARBITRAGE_ADDRESS)
-
-const ERC20_ABI = config.ERC20_ABI
+const arbitrageContract = new web3.eth.Contract(ARBITRAGE_ABI, ARBITRAGE_ADDRESS)
 
 const now = () => (moment().tz('America/New_York').format())
 
@@ -70,200 +77,209 @@ function httpGetAsync(theUrl) {
 }
 
 function getGas() {
-    return httpGetAsync('https://api.etherscan.io/api?module=gastracker&action=gasoracle&apikey=VTR3NRFFMAN3YUUW4XJ9B8TUB3XRZ6XDPK')
+    return httpGetAsync('https://gasstation-mainnet.matic.network/')
 }
 
 //For now returns profit per starting token and fees in wei
 //Later change to return max extractable profit, starting amount and pools
-function checkArb(takerToken, makerToken, gasPrice) {
+const slipConst = 1
+const tradeSize = 3000 //dollars
+const flatGas = web3.utils.toBN(process.env.ESTIMATED_GAS.toString())
+const tradeGas = web3.utils.toBN(process.env.SWAP_GAS.toString())
+function checkArb(gasP) {
     return new Promise(async (resolve, reject) => {
-        //Use quote instead for 0x?
-        sorted = await zrx.getSorted(takerToken, makerToken).then( async (sorted) => {
-            if (sorted.length < 1) {
-                reject("No orders available right now" +names[takerToken]+names[makerToken]);
-            }
-            let best = sorted[0]
-            let zrxOrder = best['order']
-            let zrxMeta = best['metaData']
-            let remaining = zrxMeta['remainingFillableTakerAssetAmount']
-            remaining = web3.utils.toBN(String(remaining)).add(web3.utils.toBN(String(zrxOrder.takerFee)))
-            let hundred = web3.utils.toBN(String(10**(tokenDecimals[takerToken] + 2)))
-            if (remaining.muln(prices[takerToken]).lt(hundred)) {
-                reject('Remaining fillable less than 0.01')
-            }
-            //calculate makerToken to eth in order to subtract gas at the end
+        //GAS STUFF
+        //TODO: clean up and compute gas amount
+        if (isNaN(gasP) || gasP == 0) {
+            gasP = 2000
+        }
+        let gasPrice = web3.utils.toBN(web3.utils.toWei(String(gasP), "gwei")) //in wei
 
-            let takerAmount1 = remaining
-            //console.log('Takeramount'+takerToken+':', takerAmount1*prices[takerToken]/(10**tokenDecimals[takerToken]))
-            let makerAmount1 = takerAmount1.mul(web3.utils.toBN(zrxOrder['makerAssetAmount'])).div(web3.utils.toBN(zrxOrder['takerAssetAmount']).add(web3.utils.toBN(zrxOrder['takerFee'])))
+        //AGGREGATION
+        console.log("getting rates...")
+        let [matrix, protocols, data] = await bestRates(web3.utils.toBN(String(tradeSize)))
+        console.log("protocols: ", protocols)
+        transform(matrix)
+        let [paths, returns] = bestSwaps(matrix)
+        console.log('paths')
+        console.log(paths)
+        console.log('returns')
+        console.log(returns)
+        let [path, Return] = bestSwap(paths, returns)
+        console.log(Date.now()/1000)
+        console.log("WMATIC Price:", (2**-matrix[0][2]))
+        console.log('OPTIMAL PATH')
+        console.log(path)
+        console.log(Return)
 
-            //TODO: change address to contract
-            let inchQuote = await inch.getSwap(makerToken, takerToken, makerAmount1, config.ARBITRAGE_ADDRESS)
-            //TODO: maybe use etherGasStation
-            let gas = web3.utils.toBN(String(inchQuote['tx']['gasPrice'])) //in wei
-            //let gas = web3.utils.toWei(String(gasPrice), "gwei") //in wei
-            if (isNaN(gas) || gas == 0) {
-                gas = web3.utils.toBN(process.env.GAS_PRICE.toString())
-            }
-            let fees = gas.mul(web3.utils.toBN(process.env.ESTIMATED_GAS.toString()))
-            let takerAmount2 = inchQuote['toTokenAmount'] //string
-            //fees = fees.add(gas.muln(1000000)) //gas Limit
-            fees = fees.muln(prices[WETH]) // rough estimate of dollars(18 decimal)/wei
-            let dollarFees = fees
+        let gas = flatGas.add(tradeGas.muln(path.length > 0 ? path.length-1 : 2))
+        let fees = gasPrice.mul(gas)
+        fees = fees.muln(prices[WMATIC]) // rough estimate of dollars(18 decimal)/wei
+        let round = web3.utils.toBN(String(10**16))
+        fees = fees.div(round).mul(round) //round
+        let dollarFees = fees
+        let dollarNumFees = dollarFees.div(web3.utils.toBN(String(10**9))).toNumber()/10**9
+
+        if (Return > 1) {
+            let swaps = getSwapInfo(path, protocols, data, matrix)
+            console.log('PROFIT no fees')
+            console.log(swaps)
+
+            let takerToken = swaps[0].takerToken
             fees = fees.div(web3.utils.toBN(String(10**(18-tokenDecimals[takerToken])))) //taker token decimals but still dollars
             fees = fees.divn(prices[takerToken])
-            //slippage
 
-            //TODO: change slippage back to 995
-            let takerAmount2Slip = web3.utils.toBN(String(takerAmount2)).muln(995).divn(1000)
-            let profit = false;
-            //console.log(names[takerToken]+'->'+names[makerToken]+'->'+names[takerToken])
-            //TODO: don't go for profit over 1.1 times
-            let expectedReturn = takerAmount2Slip.sub(fees).muln(1000000).div(takerAmount1)
-            let expectedProfit = expectedReturn.mul(takerAmount1).sub(takerAmount1.muln(1000000)).div(web3.utils.toBN(String(10**tokenDecimals[takerToken])))
-            if (takerAmount2Slip.sub(fees).gt(takerAmount1)) {
-                console.log('PROFIT: Takeramount'+names[takerToken]+names[makerToken]+':', takerAmount1.muln(prices[takerToken]).div(web3.utils.toBN(String(10**tokenDecimals[takerToken]))).toString())
-                console.log(expectedReturn.toNumber()/1000000)
-                profit = true;
+            let slipReturn = Return*(slipConst**(swaps.length))-dollarNumFees/tradeSize
+            console.log("gas fees:", dollarNumFees)
+            console.log("slip Return", slipReturn)
+            if (slipReturn > 1) {
+                console.log('EXECUTING TRADE')
                 console.log(Date.now()/1000)
-                var timeDiff = zrxOrder.expirationTimeSeconds - Math.round(Date.now()/1000)
-                if (timeDiff <= 25){
-                    console.log('--------')
-                    console.log('EXPIRED')
-                    console.log('--------')
-                    console.log(zrxOrder.expirationTimeSeconds)
-                } else if (transaction) {
-                    console.log('--------')
-                    console.log('TRANSACTION IN PROGRESS')
-                    console.log('--------')
-                } else {
-                    //clearInterval(mainInterval)
-                    console.log(zrxOrder)
-                    let outLog = names[takerToken] + '->' + names[makerToken] + '->' + names[takerToken]
-                    console.log(outLog)
-                    console.log([takerAmount2/takerAmount1,
-                    expectedReturn.toNumber()/1000000,
-                    expectedProfit.toNumber()/1000000,
-                    web3.utils.fromWei(dollarFees.toString(), "ether"),
-                    profit
-                    ])
-                    console.log('EXECUTING TRADE!!')
-                    //arbInterval = false
-                    let receipt = await executeTrade(takerToken, makerToken, takerAmount1, zrxOrder, inchQuote, takerAmount2Slip.toString(), gas,
-                        timeDiff, expectedReturn.toNumber()/1000000, expectedProfit.toNumber()/1000000) 
-                    /*
-                    if (!arbInterval) {
-                        arbInterval = true
-                    }
-                    */
-                    console.log(receipt)
-                }
+                audio.playDing()
+                let receipt = await executeTrade(swaps, gasPrice.toNumber(), gas.toNumber(), slipReturn)
+                console.log(receipt)
+                //clearInterval(mainInterval)
+                resolve([true, Return, (Return-1)*tradeSize], path)
             }
-            let outLog = names[takerToken] + '->' + names[makerToken] + '->' + names[takerToken]
-            console.log(outLog)
-            resolve([takerAmount2/takerAmount1,
-                expectedReturn.toNumber()/1000000,
-                expectedProfit.toNumber()/1000000,
-                web3.utils.fromWei(dollarFees.toString(), "ether"),
-                profit
-            ])
-        }).catch( err => {
-            reject(err)
-        })
+
+            resolve([false, Return, (Return-1)*tradeSize], path)
+        } else {
+            let testReturns = getReturns(matrix, [WETH, DAI, WETH])
+            let testReturns2 = getReturns(matrix, [USDC, WMATIC, USDC])
+            resolve([false, testReturns2, testReturns, dollarNumFees])
+        }
     })
 }
 
+
 var trades = []
-async function executeTrade(takerToken, makerToken, takerAmount1, zrxOrder, inchSwap, takerAmount2Slip, gPrice, timeDiff, expectedReturn, expectedProfit) {
-    //https://github.com/0xProject/0x-protocol-specification/blob/master/v3/v3-specification.md#order-message-format
-    const orderTuple = [
-        zrxOrder.makerAddress,
-        zrxOrder.takerAddress,
-        zrxOrder.feeRecipientAddress,
-        zrxOrder.senderAddress,
-        zrxOrder.makerAssetAmount ,
-        zrxOrder.takerAssetAmount ,
-        zrxOrder.makerFee ,
-        zrxOrder.takerFee ,
-        zrxOrder.expirationTimeSeconds ,
-        zrxOrder.salt ,
-        zrxOrder.makerAssetData ,
-        zrxOrder.takerAssetData ,
-        zrxOrder.makerFeeAssetData ,
-        zrxOrder.takerFeeAssetData
-    ]
-    const signature = zrxOrder.signature
-
-    web3.setProvider(ganache.provider({
-        "fork": 'https://speedy-nodes-nyc.moralis.io/676a6c6eac64d9f866c4daca/eth/mainnet',
-        "locked": false,
-        "mnemonic": mnemonic,
-        "unlocked_accounts": ['0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE', '0xF977814e90dA44bFA03b6295A0616a897441aceC',
-        '0x66c57bF505A85A74609D2C83E94Aabb26d691E1F', '0x2E076fB19B3Ee8F55480E0654eD573DadF8cb16d'],
-    }))
-    web3.eth.getAccounts((err, res) => accounts = res)
-
-    const data = web3.eth.abi.encodeFunctionCall(FILL_ORDER_ABI, [orderTuple, takerAmount1, signature])
-    const inchData = inchSwap.tx.data
+//TODO: test all paths
+async function executeTrade(swaps, gasPrice, gas, expectedReturn) {
+    /*
+    await getGas().then(gasJSON => {
+        gasPrice = JSON.parse(gasJSON)['fastest']
+        gasPrice = parseInt(gasPrice)+10
+        gasPrice *= 10**9 //gwei
+    })
+    */
+    console.log("executing...")
+    console.log("gas:", gas)
+    console.log("gas price:", gasPrice)
+    const swapData = []
+    let firstExchange = exchanges[swaps[0].protocol]
+    /*
+    if (firstExchange == dodo) {
+        console.log(swaps[0].data.pathPools)
+        console.log(swaps[0].data.directions)
+        dodo.debug()
+    }
+    */
+    let firstSwap = {
+        swapAddr: swaps[0].data.swapAddr,
+        approveAddr: swaps[0].data.approveAddr,
+        swapData: firstExchange.trnscData(swaps[0].takerToken, swaps[0].makerToken, swaps[0].data, process.env.CONTRACT_ADDRESS),
+        takerAddr: swaps[0].takerToken,
+        takerAmount: swaps[0].data.total
+    }
+    console.log("Takeramount0:", firstSwap.takerAmount)
+    swapData.push(firstSwap)
+    for (let i = 1; i < swaps.length; i++) {
+        console.log(i)
+        let swap = swaps[i]
+        const exchange = exchanges[swap.protocol]
+        /*
+        if (exchange == dodo) {
+            console.log(swap.data.pathPools)
+            console.log(swap.data.directions)
+            dodo.debug()
+        }
+        */
+        const callData = exchange.trnscDataNoAmount(swap.takerToken, swap.makerToken, swap.data, process.env.CONTRACT_ADDRESS)
+        let takerAmount = "0"
+        if (exchanges[swap.protocol] == balancer) {
+            takerAmount = DN(swap.data.total).minus(swap.data.amountsIn[0].times(DN(10).pow(tokenDecimals[swap.takerToken]))).toString()
+        }
+        let swapDatum = {
+            swapAddr: swap.data.swapAddr,
+            approveAddr: swap.data.approveAddr,
+            swapData: callData,
+            takerAddr: swap.takerToken,
+            //takerAmount is only for first swap and rest of amount for balancer swaps
+            takerAmount: takerAmount
+        }
+        swapData.push(swapDatum)
+    }
+    console.log("swapData:")
+    for (const swap of swapData) {
+        console.log(swap)
+        console.log(swap.takerAmount.toString())
+    }
 
     let execute = false
-    console.log('transaction:', transaction)
-    if (!transaction) {
-        transaction = true
-        console.log('testing using estimateGas...')
-        await DyDxSoloMargin.methods.initiateFlashLoan(takerToken, takerAmount1, makerToken, data, inchData).estimateGas({
-            from: accounts[0], value: gPrice.mul(new web3.utils.toBN(String(140000))), gas: 2000000, gasPrice: gPrice
-            }).then((res) => {
-                console.log(res)
-                execute = true
+    console.log('testing using estimateGas...')
+
+    //TODO: properly check for revert
+    await arbitrageContract.methods.myFlashLoanCall(swapData).estimateGas({
+        from: accounts[0], gas: gas, gasPrice: gasPrice, nonce: transactionCount
+        }).then( async function (res) {
+            console.log("then")
+            console.log(res)
+            let fees = (gasPrice/10**9)*res*prices[WMATIC]/10**9
+            console.log("Expected Gas Cost:", fees)
+            execute = true
+        }).catch(async function (err, res) {
+            console.log('catch')
+            console.log('RESULT:', res)
+            console.log('ERROR:', err)
+        })
+
+    if (execute) {
+        audio.playDing()
+        const takerContract = new web3.eth.Contract(ERC20_ABI, swaps[0].takerToken)
+        let balBefore = await takerContract.methods.balanceOf(ARBITRAGE_ADDRESS).call()
+        clearInterval(mainInterval)
+        console.log('EXECUTING')
+        const tx = await arbitrageContract.methods.myFlashLoanCall(swapData).send({
+            from: accounts[0], gas: gas, gasPrice: gasPrice, nonce: transactionCount
+            }).then((err, res) => {
+                audio.playCash()
+                console.log('then')
+                console.log('RESULT:', res)
+                console.log('ERROR:', err)
             }).catch((err, res) => {
                 console.log('catch')
                 console.log('RESULT:', res)
                 console.log('ERROR:', err)
             })
-
-        if (execute) {
-            clearInterval(mainInterval)
-            console.log('EXECUTING')
-            const tx = await DyDxSoloMargin.methods.initiateFlashLoan(takerToken, takerAmount1, makerToken, data, inchData).send({
-                from: accounts[0], value: gPrice.mul(new web3.utils.toBN(String(140000))), gas: 2000000, gasPrice: gPrice
-                }).then((err, res) => {
-                    console.log('then')
-                    console.log('RESULT:', res)
-                    console.log('ERROR:', err)
-                }).catch((err, res) => {
-                    console.log('catch')
-                    console.log('RESULT:', res)
-                    console.log('ERROR:', err)
-                })
-            
-            const takerContract = new web3.eth.Contract(ERC20_ABI, takerToken)
-            bal = await takerContract.methods.balanceOf(ARBITRAGE_ADDRESS).call()
-            console.log('Balance:', bal)
-            var trade
-            if (bal > 0) {
-                trade = [true, bal, expectedProfit, timeDiff, Date.now()/1000, names[takerToken], names[makerToken], expectedReturn]
-            } else {
-                trade = [false, bal, expectedProfit, timeDiff, Date.now()/1000, names[takerToken], names[makerToken], expectedReturn]
-            }
-            trades.push(trade)
-            fs.appendFile('src/logs/trades.txt', JSON.stringify(trade) + '\n', err => {
-                if (err != null) {
-                    console.log(err)
-                }
-            })
-            transaction = false
-            mainInterval = setInterval(arbChecks, 3000)
-            return 'EXECUTED'
+        
+        let bal = await takerContract.methods.balanceOf(ARBITRAGE_ADDRESS).call()
+        let balDif = bal - balBefore
+        console.log('Balance:', balDif)
+        var trade
+        if (balDif > 0) {
+            trade = [true, balDif, Date.now()/1000, expectedReturn, tradeSize]
         } else {
-            transaction = false
-            return 'NOT EXECUTED'
+            trade = [false, balDif, Date.now()/1000, expectedReturn, tradeSize]
         }
+        swapData.forEach( swap => trade.push(names[swap.takerAddr]))
+        trades.push(trade)
+        fs.appendFile('src/logs/trades.txt', JSON.stringify(trade) + '\n', err => {
+            if (err != null) {
+                console.log(err)
+            }
+        })
+        transaction = false
+        transactionCount = await web3.eth.getTransactionCount(accounts[0])
+        //mainInterval = setInterval(arbChecks, 3000)
+        return 'EXECUTED'
+    } else {
+        transaction = false
+        return 'NOT EXECUTED'
     }
 }
 
 
-let gasPrice = 200 //high start just before init
+let gasPrice = 2000 //high start just before init
 
 /*
 checkArb(LINK, WETH, gasPrice).then(res => {
@@ -282,148 +298,64 @@ checkArb(WBTC, WETH, gasPrice).then(res => {
 */
 
 
-let profits = {
-    DAIWETH: 0,
-    WETHDAI: 0,
-    USDCWETH: 0,
-    WETHUSDC: 0,
-    WETHWBTC: 0,
-    WETHLINK: 0,
-    USDCWBTC: 0,
-    DAIUSDC: 0,
-    DAIUSDT: 0,
-    USDCDAI: 0
-}
 let time = 0;
 
 let updateGas = true
 setInterval( () => {
     updateGas = true
-}, 6000)
+}, 10000)
 
-let gasJSON
-async function call() {
-    if (updateGas) {
-        gasJSON = await getGas()
-        gasPrice = JSON.parse(gasJSON)['result']['ProposeGasPrice'] * 2 //need really FAST transaction?
-        console.log('GAS PRICE', gasPrice)
-        updateGas = false
-        console.log('GAS UPDATE')
-    }
-    checkArb(DAI, WETH, gasPrice).then(res => {
-        console.log(res)
-        if (res) {
-            return true
-        } else {
-            call()
-        }
-    }).catch(error => {
-        console.log('DAI->WETH->DAI')
-        console.log(error)
+function updateNonce() {
+    web3.eth.getTransactionCount(accounts[0]).then( res => {
+        transactionCount = res
+        console.log('nonce:', res)
     })
 }
 
+setInterval( () => {
+    updateNonce()
+}, 100000)
+
 
 const arbChecks = async () => {
-    if (updateGas) {
-        getGas().then(gasJSON => {
-            gasPrice = JSON.parse(gasJSON)['result']['FastGasPrice']
-            gasPrice = parseInt(gasPrice) + 10
-        })
-        updateGas = false
-    }
-    if (arbInterval) {
-        checkArb(DAI, WETH, gasPrice).then(res => {
+    while(true) {
+        console.log("check")
+        if (updateGas) {
+            getGas().then(gasJSON => {
+                gasPrice = JSON.parse(gasJSON)['fastest']
+                gasPrice = parseInt(gasPrice)+10
+            })
+            updateGas = false
+        }
+            time++
+        //get best swap and check if profitable
+        let arbCheck = checkArb(gasPrice).then((res, err) => {
             console.log(res)
-            if (res[4]) {
-                profits['DAIWETH']++
-            }
-        }).catch(error => {
-            console.log(error)
         })
-        
-        checkArb(WETH, DAI, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['WETHDAI']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(WETH, USDC, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['WETHUSDC']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(USDC, WETH, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['USDCWETH']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(WETH, WBTC, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['WETHWBTC']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(WETH, LINK, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['WETHLINK']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        /*
-        checkArb(USDC, WBTC, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['USDCWBTC']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(DAI, USDC, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['DAIUSDC']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        checkArb(USDC, DAI, gasPrice).then(res => {
-            console.log(res)
-            if (res[4]) {
-                profits['USDCDAI']++
-            }
-        }).catch(error => {
-            console.log(error)
-        })
-        */
-        
-        time++
+        let timeOut = new Promise((resolve) => setTimeout(() => resolve(true), 15000))
+        await Promise.all([arbCheck, timeOut])
+
         if (time >= 200) {
-            console.log(profits)
+            //TODO: update price using median of aggregation matrix with dai, usdc usdt from all exchanges
             console.log(trades)
-            fs.writeFile('src/logs/profits.txt', JSON.stringify(profits), err => console.log(err))
+            //fs.writeFile('src/logs/profits.txt', JSON.stringify(profits), err => console.log(err))
             console.log(transaction)
+            transaction = false
             time = 0
         }
     }
 }
 
-var mainInterval = setInterval(arbChecks, 1000)
-var arbInterval = true
-var transaction = false
+var mainInterval
+var arbInterval
+var transaction
+async function main() {
+    await init()
+    //mainInterval = setInterval(arbChecks, 30000)
+    arbChecks()
+    arbInterval = true
+    transaction = false
+}
+main()
 
 
-
-//bytes memory data = abi.encode(flashToken, flashAmount, balanceBefore, arbToken, zrxData, oneSplitMinReturn, oneSplitDistribution);

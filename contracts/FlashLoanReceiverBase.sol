@@ -15,7 +15,7 @@ abstract contract FlashLoanReceiverBase is IFlashLoanReceiver {
   constructor(address providerAddress) public {
     ILendingPoolAddressesProvider provider = ILendingPoolAddressesProvider(providerAddress);
     ADDRESSES_PROVIDER = provider;
-    LENDING_POOL = ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
+    LENDING_POOL = ILendingPool(0x8dFf5E27EA6b7AC08EbFdf9eB090F32ee9a30fcf);
     //address test = provider.getLendingPool();
     //LENDING_POOL = ILendingPool(provider.getLendingPool());
   }

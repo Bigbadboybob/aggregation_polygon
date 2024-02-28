@@ -1,0 +1,6 @@
+require('dotenv').config()
+const Web3 = require('web3')
+//const web3 = new Web3(process.env.SPARE_URL3)
+const web3 = new Web3(process.env.TEST_URL)
+web3.eth.getBalance("0x9F8cCdaFCc39F3c7D6EBf637c9151673CBc36b88").then(console.log)
+//web3.eth.isSyncing().then(console.log)

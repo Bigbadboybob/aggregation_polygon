@@ -9,11 +9,15 @@ module.exports = {
 	networks: {
 	  development: {
 	    host: "127.0.0.1",
-	    port: 8545,
+	    port: 7545,
 	    // gas: 20000000,
-	    network_id: "*",
+	    network_id: 137,
 	    skipDryRun: true
 	  },
+	  /*
+	  Start Ganche Fork:
+	  ganache-cli -f https://polygon-mainnet.infura.io/v3/d784ba1b7b8a4f13942f0a8aaf68596d --chainId 137 -u 0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE -u 0xF977814e90dA44bFA03b6295A0616a897441aceC -u 0x66c57bF505A85A74609D2C83E94Aabb26d691E1F -p 7545
+	  */
 	  ropsten: {
 	    provider: () => new HDWalletProvider(mnemonic, `https://speedy-nodes-nyc.moralis.io/676a6c6eac64d9f866c4daca/eth/ropsten`),
 	    network_id: 3,
@@ -29,15 +33,15 @@ module.exports = {
 		skipDryRun: true
 	  },
 	  mainnet: {
-	    provider: () => new HDWalletProvider(mnemonic, `https://speedy-nodes-nyc.moralis.io/676a6c6eac64d9f866c4daca/eth/mainnet`),
-	    network_id: 1,
+	    provider: () => new HDWalletProvider(mnemonic, process.env.RPC_URL),
+	    network_id: 137,
 	    gas: 5000000,
-	    gasPrice: 24000000000 // 24 Gwei
+	    gasPrice: 550000000000 // 140 Gwei
 	  }
 	},
 	compilers: {
 		solc: {
-			version: "^0.8.7",
+			version: "^0.6.12",
 		},
 	},
 }
